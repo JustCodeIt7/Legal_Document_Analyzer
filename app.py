@@ -4,7 +4,6 @@ import tempfile
 from textwrap import dedent
 from typing import TypedDict
 
-import ollama
 import pdfplumber
 import streamlit as st
 from dotenv import load_dotenv
@@ -27,29 +26,24 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 MAX_INPUT_CHARS = 10_000  # Prevent overly long prompts
 
-_ollama_client: ollama.Client | None = None
-
-
-def get_ollama_client() -> ollama.Client:
-    """Create or reuse a single Ollama client."""
-    global _ollama_client
-    if _ollama_client is None:
-        _ollama_client = ollama.Client(host=OLLAMA_BASE_URL)
-    return _ollama_client
-
 
 def call_ollama(prompt: str, temperature: float = 0.2) -> str:
-    """Invoke the configured Ollama model and return the text content."""
-    client = get_ollama_client()
-    response = client.chat(
+    """Invoke the configured Ollama model via LangChain and return text content."""
+    llm = ChatOllama(
         model=llm_model,
-        messages=[{"role": "user", "content": prompt}],
-        options={"temperature": temperature},
+        base_url=OLLAMA_BASE_URL,
+        temperature=temperature,
     )
-    if content := response.get("message", {}).get("content", ""):
-        return content.strip()
+    response = llm.invoke(prompt)
+    if hasattr(response, "content"):
+        content = response.content
+    elif isinstance(response, str):
+        content = response
     else:
+        content = ""
+    if not content:
         raise RuntimeError("Empty response returned from Ollama.")
+    return content.strip()
 
 
 def clamp_text(text: str) -> str:
