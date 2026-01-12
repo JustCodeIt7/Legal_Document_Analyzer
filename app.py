@@ -1,22 +1,60 @@
-import streamlit as st
-import tempfile
 import os
-from typing import TypedDict, List, Optional
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from langgraph.graph import StateGraph, END
-from langchain_community.document_loaders import PDFPlumberLoader, TextLoader
+import sys
+import tempfile
+from textwrap import dedent
+from typing import TypedDict
+
+import ollama
+import pdfplumber
+import streamlit as st
 from dotenv import load_dotenv
-from langchain_ollama import ChatOllama
+from langgraph.graph import StateGraph, END
 
 #%%
 ################################ Configuration & Setup ################################
 
 load_dotenv()
 
+# Streamlit's file watcher can trip over torch.classes if it is present in the
+# environment; remove any eagerly imported torch modules so the watcher skips it.
+for _mod in [m for m in list(sys.modules) if m.startswith("torch")]:
+    sys.modules.pop(_mod, None)
+
 # Define model parameters and connection strings
 llm_model = "gpt-oss:20b"  # Using a lightweight model
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
+MAX_INPUT_CHARS = 10_000  # Prevent overly long prompts
+
+_ollama_client: ollama.Client | None = None
+
+
+def get_ollama_client() -> ollama.Client:
+    """Create or reuse a single Ollama client."""
+    global _ollama_client
+    if _ollama_client is None:
+        _ollama_client = ollama.Client(host=OLLAMA_BASE_URL)
+    return _ollama_client
+
+
+def call_ollama(prompt: str, temperature: float = 0.2) -> str:
+    """Invoke the configured Ollama model and return the text content."""
+    client = get_ollama_client()
+    response = client.chat(
+        model=llm_model,
+        messages=[{"role": "user", "content": prompt}],
+        options={"temperature": temperature},
+    )
+    content = response.get("message", {}).get("content", "")
+    if not content:
+        raise RuntimeError("Empty response returned from Ollama.")
+    return content.strip()
+
+
+def clamp_text(text: str) -> str:
+    """Limit the amount of text sent to the model to avoid context overflow."""
+    return text if len(text) <= MAX_INPUT_CHARS else text[:MAX_INPUT_CHARS]
+
 
 # Define the shared state schema for the LangGraph agents
 class AgentState(TypedDict):
@@ -31,65 +69,59 @@ class AgentState(TypedDict):
 
 def summarize_node(state: AgentState):
     """Summarizes the legal document."""
-    text = state["original_text"]
-    prompt = ChatPromptTemplate.from_template(
-        "You are an expert legal assistant. Summarize the following legal document concisely:\n\n{text}"
+    text = clamp_text(state["original_text"])
+    prompt = dedent(
+        f"""
+        You are an expert legal assistant. Summarize the following legal document concisely:
+
+        {text}
+        """
     )
-    
-    # Initialize the LLM chain for summarization
-    chain = (
-        prompt
-        | ChatOllama(model=llm_model, base_url=OLLAMA_BASE_URL)
-        | StrOutputParser()
-    )
-    
-    # Prevent context window overflow by limiting input tokens
-    return {
-        "summary": chain.invoke({"text": text[:10000]})
-    }
+
+    return {"summary": call_ollama(prompt)}
 
 
 def analyze_risks_node(state: AgentState):
     """Identifies potential risks in the document."""
-    text = state["original_text"]
-    prompt = ChatPromptTemplate.from_template(
-        "You are an expert legal assistant. Identify key legal risks and liabilities in this document:\n\n{text}"
+    text = clamp_text(state["original_text"])
+    prompt = dedent(
+        f"""
+        You are an expert legal assistant. Identify key legal risks and liabilities in this document:
+
+        {text}
+        """
     )
-    chain = (
-        prompt
-        | ChatOllama(model=llm_model, base_url=OLLAMA_BASE_URL)
-        | StrOutputParser()
-    )
-    return {"risks": chain.invoke({"text": text[:10000]})}
+    return {"risks": call_ollama(prompt)}
 
 
 def suggest_improvements_node(state: AgentState):
     """Suggests improvements for the document."""
-    text = state["original_text"]
-    prompt = ChatPromptTemplate.from_template(
-        "You are an expert legal assistant. Suggest clause improvements or missing protections for this document:\n\n{text}"
+    text = clamp_text(state["original_text"])
+    prompt = dedent(
+        f"""
+        You are an expert legal assistant. Suggest clause improvements or missing protections for this document:
+
+        {text}
+        """
     )
-    chain = (
-        prompt
-        | ChatOllama(model=llm_model, temperature=0.3, base_url=OLLAMA_BASE_URL) # Use lower temperature for consistent suggestions
-        | StrOutputParser()
-    )
-    return {"suggestions": chain.invoke({"text": text[:10000]})}
+    return {"suggestions": call_ollama(prompt, temperature=0.3)}
 
 
 def compile_report_node(state: AgentState):
     """Compiles the final markdown report."""
     # Aggregate outputs from all previous nodes into a single Markdown string
-    report = f"""
-    ### 📝 Document Summary
-    {state["summary"]}
+    report = dedent(
+        f"""
+        ### 📝 Document Summary
+        {state["summary"]}
 
-    ### ⚠️ Identified Risks
-    {state["risks"]}
+        ### ⚠️ Identified Risks
+        {state["risks"]}
 
-    ### 💡 Suggestions for Improvement
-    {state["suggestions"]}
-    """
+        ### 💡 Suggestions for Improvement
+        {state["suggestions"]}
+        """
+    )
     return {"final_report": report}
 
 #%%
@@ -129,9 +161,9 @@ def load_doc(uploaded_file):
     # Select appropriate loader based on file extension
     try:
         if uploaded_file.name.endswith(".pdf"):
-            loader = PDFPlumberLoader(tmp_path)
-            docs = loader.load()
-            text = "\n".join([d.page_content for d in docs])
+            with pdfplumber.open(tmp_path) as pdf:
+                pages = [page.extract_text() or "" for page in pdf.pages]
+                text = "\n".join(pages)
         else:  # Text file
             with open(tmp_path, "r") as f:
                 text = f.read()
@@ -150,7 +182,11 @@ def analyze_document(doc_text):
     initial_state = {"original_text": doc_text}
     
     # Execute the graph workflow
-    result = app.invoke(initial_state)
+    try:
+        result = app.invoke(initial_state)
+    except Exception as err:
+        st.error(f"Analysis failed: {err}")
+        return
 
     st.markdown("## 📊 Analysis Report")
 
