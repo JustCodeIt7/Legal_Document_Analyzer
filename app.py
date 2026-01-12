@@ -148,17 +148,17 @@ def load_doc(uploaded_file):
 
     text = ""
     # Select appropriate loader based on file extension
-    try:
-        if uploaded_file.name.endswith(".pdf"):
-            with pdfplumber.open(tmp_path) as pdf:
-                pages = [page.extract_text() or "" for page in pdf.pages]
-                text = "\n".join(pages)
-        else:  # Text file
-            with open(tmp_path, "r") as f:
-                text = f.read()
-    finally:
-        # Ensure cleanup of the temporary file after processing
-        os.remove(tmp_path)
+
+    if uploaded_file.name.endswith(".pdf"):
+        with pdfplumber.open(tmp_path) as pdf:
+            pages = [page.extract_text() or "" for page in pdf.pages]
+            text = "\n".join(pages)
+    else:  # Text file
+        with open(tmp_path, "r") as f:
+            text = f.read()
+
+    # Ensure cleanup of the temporary file after processing
+    os.remove(tmp_path)
 
     return text
 
@@ -171,11 +171,8 @@ def analyze_document(doc_text):
     initial_state = {"original_text": doc_text}
 
     # Execute the graph workflow
-    try:
-        result = app.invoke(initial_state)
-    except Exception as err:
-        st.error(f"Analysis failed: {err}")
-        return
+    result = app.invoke(initial_state)
+
 
     st.markdown("## 📊 Analysis Report")
 
