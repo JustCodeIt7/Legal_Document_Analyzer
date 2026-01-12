@@ -204,6 +204,10 @@ def analyze_document(doc_text):
 def main():
     st.set_page_config(page_title="Legal Doc Analyzer", layout="wide")
 
+    with st.expander("Session State"):
+        st.write(st.session_state)
+
+
     # Configure the sidebar for file uploads
     with st.sidebar:
         st.header("Upload Document")
