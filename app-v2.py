@@ -260,7 +260,6 @@ def main():
         overlap = st.number_input("Chunk overlap (chars)", value=DEFAULT_CHUNK_OVERLAP, step=50)
 
     st.title("⚖️ AI Legal Document Analyzer")
-    st.info("Not legal advice. Do not upload highly sensitive documents unless you accept the privacy risk of local processing and logs.")
 
     if uploaded_file:
         data = uploaded_file.getvalue()
