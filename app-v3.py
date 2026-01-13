@@ -246,6 +246,11 @@ def analyze_uploaded_file(uploaded_file, h):
     # Load and extract text from the uploaded document
     doc_text = load_doc(uploaded_file)
 
+    preview_lines = doc_text.splitlines()
+    preview_text = "\n".join(preview_lines[:30])
+    with st.expander("Document preview (first 30 lines)"):
+        st.markdown(preview_text if preview_text else "[No content extracted]")
+
     prog.progress(50, text="Running analysis agents...")
     # Run the AI workflow to analyze the document
     result = analyze_document(doc_text)
