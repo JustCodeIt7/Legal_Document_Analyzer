@@ -17,4 +17,4 @@ typing-extensions>=4.5.0
 langchain-docling
 docling
 opencv-python
-
+pymupdf4llm

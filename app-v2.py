@@ -8,13 +8,16 @@ import streamlit as st
 from dotenv import load_dotenv
 from langchain_ollama import ChatOllama
 from langgraph.graph import END, StateGraph
-from langchain_docling.loader import DoclingLoader, ExportType
+import pymupdf4llm
 
+from langchain_text_splitters import CharacterTextSplitter
+
+from utils import draw_mermaid_png
 ################################ Configuration & Setup ################################
 
 load_dotenv()
-
-DEFAULT_MODEL = "gpt-oss:20b"
+# gemma3:4b,
+DEFAULT_MODEL = "granite4:350m"
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 DEFAULT_MAX_INPUT_CHARS = 10_000
@@ -36,18 +39,14 @@ def file_hash(data: bytes) -> str:
 
 
 def chunk_text(text: str, chunk_size: int, overlap: int) -> List[str]:
-    if chunk_size <= overlap:
-        overlap = 0
-    chunks = []
-    start = 0
-    n = len(text)
-    while start < n:
-        end = min(n, start + chunk_size)
-        chunks.append(text[start:end])
-        if end == n:
-            break
-        start = end - overlap
-    return chunks
+    splitter = CharacterTextSplitter(
+        separator="\n\n",
+        chunk_size=chunk_size,
+        chunk_overlap=overlap,
+        length_function=len,
+        is_separator_regex=False,
+    )
+    return splitter.split_text(text)
 
 
 @st.cache_resource
@@ -193,8 +192,9 @@ def get_workflow():
     workflow.add_edge("analyze_risks", "suggest_improvements")
     workflow.add_edge("suggest_improvements", "compile_report")
     workflow.add_edge("compile_report", END)
-    return workflow.compile()
-
+    graph = workflow.compile()
+    draw_mermaid_png(graph)
+    return graph
 
 ################################ Helper Functions ################################
 
@@ -206,16 +206,17 @@ def load_doc(uploaded_file) -> str:
         return data.decode("utf-8", errors="replace")
 
     tmp_path = None
-    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{suffix}") as tmp:
-        tmp.write(data)
-        tmp_path = tmp.name
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{suffix}") as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
 
-    loader = DoclingLoader(file_path=tmp_path, export_type=ExportType.MARKDOWN)
-    docs = loader.load()
-    text = "\n\n".join(d.page_content or "" for d in docs).strip()
-
-    os.remove(tmp_path)
-    return text
+        # Convert PDFs to markdown using pymupdf4llm
+        text = pymupdf4llm.to_markdown(tmp_path)
+        return text.strip()
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 def analyze_document(doc_text: str) -> Dict[str, Any]:
@@ -272,7 +273,7 @@ def main():
 
             preview_text = doc_text[: int(max_chars)]
             with st.expander("Extracted text preview"):
-                st.text(preview_text)
+                st.markdown(preview_text)
 
             prog.progress(25, text="Condensing long document...")
             condensed = map_reduce_condense(
